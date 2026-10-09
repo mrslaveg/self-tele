@@ -232,48 +232,17 @@ EOF
 systemctl daemon-reload
 systemctl enable --now telemt1
 
-# Firewall and per-source SYN rate limiting. Existing UFW rules are preserved.
+# Firewall. Existing UFW rules are preserved.
 if [[ "$DO_UFW" =~ ^[YyДд]$ ]]; then
   ufw allow "$SSH_PORT/tcp" comment 'SSH access'
   ufw allow 80/tcp comment 'Caddy HTTP and ACME'
-
-  RECENT_OK=0
-  if modinfo xt_recent >/dev/null 2>&1 && modprobe xt_recent 2>/dev/null; then
-    echo xt_recent > /etc/modules-load.d/xt_recent.conf
-    if lsmod | grep -q '^xt_recent'; then RECENT_OK=1; fi
-  fi
-
-  if (( RECENT_OK )); then
-    # Drop a second new SYN from the same source IP within one second.
-    # RETURN ensures UFW's normal port policy still decides whether to accept it.
-    python3 - <<'PYEOF'
-from pathlib import Path
-p = Path('/etc/ufw/before.rules')
-s = p.read_text()
-if 'mtp443' not in s:
-    marker = '-A ufw-before-input -i lo -j ACCEPT'
-    rules = '''# === Telemt :443 SYN rate-limit (xt_recent) ===
--A ufw-before-input -p tcp --dport 443 --syn -m recent --name mtp443 --rcheck --seconds 1 --reap -j DROP
--A ufw-before-input -p tcp --dport 443 --syn -m recent --name mtp443 --set -j RETURN
-'''
-    if marker not in s:
-        raise SystemExit('Не найден маркер loopback в /etc/ufw/before.rules')
-    p.write_text(s.replace(marker, marker + '\n' + rules.rstrip(), 1))
-PYEOF
-    ufw allow 443/tcp comment 'Telemt MTProto'
-  else
-    warn "Модуль xt_recent недоступен; включаю встроенный UFW limit для 443 вместо правила recent."
-    ufw limit 443/tcp comment 'Telemt MTProto rate limit'
-  fi
+  ufw allow 443/tcp comment 'Telemt MTProto'
 
   ufw default deny incoming
   ufw default allow outgoing
   ufw --force enable
   ufw reload
   ufw status verbose
-  if (( RECENT_OK )); then
-    iptables -L ufw-before-input -v -n | grep -E 'mtp443|recent' || warn "Правила recent не видны в iptables; проверь UFW вручную."
-  fi
 else
   warn "UFW пропущен по выбору пользователя. Telemt/Caddy всё равно слушают только необходимые порты, но firewall не включён этим установщиком."
 fi
