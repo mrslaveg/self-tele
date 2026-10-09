@@ -118,7 +118,6 @@ cat > /etc/caddy/Caddyfile <<EOF
     email $EMAIL
     auto_https disable_redirects
     default_sni $DOMAIN
-    fallback_sni $DOMAIN
 }
 
 http://$DOMAIN {
