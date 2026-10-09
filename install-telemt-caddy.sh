@@ -50,12 +50,15 @@ apt-get update
 apt-get install -y ca-certificates curl wget tar jq ufw python3 dnsutils openssl iproute2 iptables
 
 # Install Caddy from its official apt repository.
-apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gnupg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-  | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-  > /etc/apt/sources.list.d/caddy-stable.list
-apt-get update
+#apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gnupg
+#curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+#  | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+#curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+#  > /etc/apt/sources.list.d/caddy-stable.list
+#apt-get update
+#apt-get install -y caddy
+
+# Caddy из репозитория Ubuntu (без Cloudsmith)
 apt-get install -y caddy
 
 # No preflight DNS checks: recently changed records may still be propagating.
