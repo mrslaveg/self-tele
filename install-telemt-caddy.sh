@@ -106,6 +106,8 @@ DECOYS+=("PCFkb2N0eXBlIGh0bWw+CjxodG1sIGxhbmc9InJ1Ij4KPGhlYWQ+CjxtZXRhIGNoYXJzZX
 
 install -d -m 0755 /var/www/html
 sel=$(( RANDOM % ${#DECOYS[@]} ))
+# Ensure the web root exists on a fresh VPS before writing the decoy page.
+install -d -o root -g root -m 0755 /var/www/html
 printf '%s' "${DECOYS[$sel]}" | base64 -d > /var/www/html/index.html
 chmod 0644 /var/www/html/index.html
 ok "Установлена HTML-заглушка #$((sel + 1)) из ${#DECOYS[@]}"
