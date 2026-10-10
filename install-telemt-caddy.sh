@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Interactive Telemt + Caddy self-mask installer for Ubuntu 22.04/24.04.
-# Uses the supplied Caddy XHTTP installer's randomized Base64 HTML decoy templates.
+# Optional: Telemt Panel behind Caddy, sudo admin user, basic hardening.
 set -Eeuo pipefail
 
 if [[ -t 1 ]]; then
@@ -17,8 +17,8 @@ command -v apt-get >/dev/null || die "Поддерживается Ubuntu/Debian
 [[ "${ID:-}" == ubuntu || "${ID_LIKE:-}" == *debian* || "${ID:-}" == debian ]] || warn "ОС не Ubuntu/Debian; продолжай на свой риск."
 
 say "\n${B}${C}== Telemt + Caddy self-mask installer ==${N}\n"
-say "Схема: Telemt :443 → локальный Caddy TLS :8444; Caddy сам получает и продлевает сертификат."
-say "Caddy сам получит и продлит сертификат. Если DNS только что менялся, получение может занять время.\n"
+say "Схема: Telemt :443 → Caddy TLS :8444 (decoy); Caddy управляет сертификатами."
+say "Опционально: Telemt Panel за Caddy на отдельном порту (по умолчанию 8443).\n"
 
 read -rp "Домен ноды (например node.example.com): " DOMAIN
 DOMAIN="${DOMAIN#http://}"; DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%%/*}"
@@ -28,12 +28,63 @@ read -rp "Email для Let's Encrypt: " EMAIL
 read -rp "Имя пользователя Telemt [user1]: " USERNAME
 USERNAME="${USERNAME:-user1}"
 [[ "$USERNAME" =~ ^[a-zA-Z0-9_-]{1,32}$ ]] || die "Имя пользователя: только латиница, цифры, _ и - (до 32 символов)."
-read -rp "Порт SSH, который нужно разрешить в UFW [22]: " SSH_PORT
+read -rp "Порт SSH для UFW [22]: " SSH_PORT
 SSH_PORT="${SSH_PORT:-22}"
 [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT > 0 && SSH_PORT < 65536 )) || die "Некорректный SSH-порт."
-say "Будет настроен UFW: SSH/$SSH_PORT, HTTP/80, Telemt/443."
-read -rp "Включить firewall? Проверь SSH-порт, иначе можно потерять SSH-доступ [Y/n] " DO_UFW
+
+read -rp "Создать обычного пользователя с sudo? [Y/n] " DO_ADMIN
+DO_ADMIN="${DO_ADMIN:-Y}"
+ADMIN_NAME=""
+ADMIN_PASS=""
+ADMIN_SSH_KEY=""
+if [[ "$DO_ADMIN" =~ ^[YyДд]$ ]]; then
+  read -rp "Имя sudo-пользователя [deploy]: " ADMIN_NAME
+  ADMIN_NAME="${ADMIN_NAME:-deploy}"
+  [[ "$ADMIN_NAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "Имя пользователя: [a-z_][a-z0-9_-]*"
+  [[ "$ADMIN_NAME" != "root" && "$ADMIN_NAME" != "telemt" && "$ADMIN_NAME" != "telemt-panel" ]] || die "Зарезервированное имя."
+  if id "$ADMIN_NAME" &>/dev/null; then
+    warn "Пользователь $ADMIN_NAME уже существует — пароль не меняю."
+  else
+    read -rsp "Пароль для $ADMIN_NAME (не отображается): " ADMIN_PASS
+    echo
+    [[ ${#ADMIN_PASS} -ge 10 ]] || die "Пароль sudo-пользователя: минимум 10 символов."
+  fi
+  say "SSH public key (ssh-ed25519 / ssh-rsa). Пустая строка — только пароль."
+  read -rp "Публичный ключ: " ADMIN_SSH_KEY
+  if [[ -n "$ADMIN_SSH_KEY" ]]; then
+    [[ "$ADMIN_SSH_KEY" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ssh-dss)\  ]] \
+      || die "Ключ должен начинаться с ssh-ed25519 / ssh-rsa / ecdsa-…"
+  fi
+fi
+
+read -rp "Включить UFW (SSH/$SSH_PORT, 80, 443)? [Y/n] " DO_UFW
 DO_UFW="${DO_UFW:-Y}"
+read -rp "Базовый hardening (sshd, unattended-upgrades, sysctl)? [Y/n] " DO_HARDEN
+DO_HARDEN="${DO_HARDEN:-Y}"
+
+read -rp "Установить Telemt Panel (веб-панель)? [y/N] " DO_PANEL
+DO_PANEL="${DO_PANEL:-N}"
+PANEL_PORT=8443
+PANEL_PASS=""
+PANEL_USER="admin"
+PANEL_VERSION="v1.0.0-rc.3"
+if [[ "$DO_PANEL" =~ ^[YyДд]$ ]]; then
+  read -rp "Логин панели [admin]: " PANEL_USER
+  PANEL_USER="${PANEL_USER:-admin}"
+  [[ "$PANEL_USER" =~ ^[a-zA-Z0-9_-]{1,32}$ ]] || die "Логин панели некорректен."
+  read -rsp "Пароль админа панели (не отображается): " PANEL_PASS
+  echo
+  [[ -n "$PANEL_PASS" ]] || die "Пароль панели обязателен."
+  [[ ${#PANEL_PASS} -ge 8 ]] || die "Пароль панели: минимум 8 символов."
+  read -rp "Публичный HTTPS-порт панели [8443]: " PANEL_PORT
+  PANEL_PORT="${PANEL_PORT:-8443}"
+  [[ "$PANEL_PORT" =~ ^[0-9]+$ ]] && (( PANEL_PORT > 0 && PANEL_PORT < 65536 )) || die "Некорректный порт панели."
+  (( PANEL_PORT != 80 && PANEL_PORT != 443 && PANEL_PORT != 8444 && PANEL_PORT != 9091 && PANEL_PORT != 8080 )) \
+    || die "Порт панели не должен быть 80/443/8080/8444/9091."
+  say "Панель: https://${DOMAIN}:${PANEL_PORT} (TLS=Caddy → 127.0.0.1:8080)"
+fi
+
+say "\n${B}Сводка:${N} domain=$DOMAIN user=$USERNAME ssh=$SSH_PORT ufw=$DO_UFW harden=$DO_HARDEN panel=$DO_PANEL admin=${ADMIN_NAME:-нет}"
 read -rp "Продолжить установку? [y/N] " CONFIRM
 [[ "$CONFIRM" =~ ^[YyДд]$ ]] || die "Отменено."
 
@@ -46,11 +97,95 @@ if ss -ltnH '( sport = :80 or sport = :443 or sport = :8444 )' | grep -q .; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y ca-certificates curl wget tar jq ufw dnsutils openssl iproute2
-
-# Caddy из репозитория Ubuntu (без Cloudsmith — иначе бывают 402 на apt update)
+say "\n${B}${C}== Обновление системы ==${N}"
+apt-get update -y
+apt-get -y upgrade
+apt-get -y dist-upgrade
+apt-get install -y ca-certificates curl wget tar jq ufw dnsutils openssl iproute2 \
+  sudo unattended-upgrades apt-listchanges needrestart
 apt-get install -y caddy
+ok "Система обновлена, базовые пакеты установлены."
+
+if [[ "$DO_ADMIN" =~ ^[YyДд]$ ]]; then
+  if ! id "$ADMIN_NAME" &>/dev/null; then
+    useradd -m -s /bin/bash -G sudo "$ADMIN_NAME"
+    echo "$ADMIN_NAME:$ADMIN_PASS" | chpasswd
+    ok "Создан пользователь $ADMIN_NAME (группа sudo)"
+  else
+    usermod -aG sudo "$ADMIN_NAME" 2>/dev/null || true
+    ok "Пользователь $ADMIN_NAME уже есть, sudo при необходимости"
+  fi
+  install -d -m 0750 /etc/sudoers.d
+  # пароль для sudo обязателен (не NOPASSWD)
+  echo "$ADMIN_NAME ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/90-$ADMIN_NAME"
+  chmod 0440 "/etc/sudoers.d/90-$ADMIN_NAME"
+  visudo -cf "/etc/sudoers.d/90-$ADMIN_NAME" >/dev/null || die "sudoers для $ADMIN_NAME невалиден"
+
+  if [[ -n "${ADMIN_SSH_KEY:-}" ]]; then
+    AHOME="$(getent passwd "$ADMIN_NAME" | cut -d: -f6)"
+    install -d -o "$ADMIN_NAME" -g "$ADMIN_NAME" -m 0700 "$AHOME/.ssh"
+    AUTH="$AHOME/.ssh/authorized_keys"
+    touch "$AUTH"
+    chown "$ADMIN_NAME:$ADMIN_NAME" "$AUTH"
+    chmod 0600 "$AUTH"
+    if ! grep -qxF "$ADMIN_SSH_KEY" "$AUTH" 2>/dev/null; then
+      printf '%s\n' "$ADMIN_SSH_KEY" >> "$AUTH"
+      ok "SSH-ключ добавлен в $AUTH"
+    else
+      ok "SSH-ключ уже есть в authorized_keys"
+    fi
+  fi
+fi
+
+if [[ "$DO_HARDEN" =~ ^[YyДд]$ ]]; then
+  say "\n${B}${C}== Hardening ==${N}"
+  cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AU'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+AU
+  dpkg-reconfigure -f noninteractive unattended-upgrades 2>/dev/null || true
+  ok "unattended-upgrades включён"
+
+  SSHD=/etc/ssh/sshd_config
+  if [[ -f "$SSHD" ]]; then
+    cp -a "$SSHD" "${SSHD}.bak.telemt" 2>/dev/null || true
+    sed -i -E 's/^#?PermitEmptyPasswords.*/PermitEmptyPasswords no/' "$SSHD"
+    sed -i -E 's/^#?X11Forwarding.*/X11Forwarding no/' "$SSHD"
+    sed -i -E 's/^#?MaxAuthTries.*/MaxAuthTries 4/' "$SSHD"
+    sed -i -E 's/^#?PubkeyAuthentication.*/PubkeyAuthentication yes/' "$SSHD"
+    # Если есть sudo-юзер + ключ — ужесточаем root/password (осторожно: не закрываем текущую сессию)
+    if [[ "$DO_ADMIN" =~ ^[YyДд]$ ]] && [[ -n "${ADMIN_SSH_KEY:-}" ]]; then
+      sed -i -E 's/^#?PermitRootLogin.*/PermitRootLogin prohibit-password/' "$SSHD"
+      # PasswordAuthentication оставляем yes, пока не убедишься что ключ работает
+      warn "PermitRootLogin=prohibit-password. PasswordAuthentication пока yes — после проверки входа ключом:"
+      warn "  sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && systemctl reload ssh"
+    elif [[ "$DO_ADMIN" =~ ^[YyДд]$ ]]; then
+      warn "Root SSH не отключаю (нет SSH-ключа). После настройки ключа: PermitRootLogin no"
+    fi
+    if sshd -t 2>/dev/null; then
+      systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+      ok "sshd: базовые ограничения применены"
+    else
+      warn "sshd -t failed — SSH-конфиг не перезагружен"
+    fi
+  fi
+
+  cat > /etc/sysctl.d/99-telemt-harden.conf <<'EOF'
+kernel.kptr_restrict = 2
+kernel.dmesg_restrict = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.tcp_syncookies = 1
+EOF
+  ok "sysctl hardening записан"
+fi
+
 
 # No preflight DNS checks: recently changed records may still be propagating.
 
@@ -237,6 +372,9 @@ if [[ "$DO_UFW" =~ ^[YyДд]$ ]]; then
   ufw allow "$SSH_PORT/tcp" comment 'SSH access'
   ufw allow 80/tcp comment 'Caddy HTTP and ACME'
   ufw allow 443/tcp comment 'Telemt MTProto'
+  if [[ "$DO_PANEL" =~ ^[YyДд]$ ]]; then
+    ufw allow "${PANEL_PORT}/tcp" comment 'Telemt Panel'
+  fi
 
   ufw default deny incoming
   ufw default allow outgoing
@@ -247,13 +385,107 @@ else
   warn "UFW пропущен по выбору пользователя. Telemt/Caddy всё равно слушают только необходимые порты, но firewall не включён этим установщиком."
 fi
 
+# ── Telemt Panel (optional): HTTP backend + Caddy TLS front ───────────────
+PANEL_URL=""
+if [[ "$DO_PANEL" =~ ^[YyДд]$ ]]; then
+  say "\n${B}${C}== Установка Telemt Panel ==${N}"
+  API_OK=0
+  for _ in $(seq 1 20); do
+    if curl -fsS --max-time 2 http://127.0.0.1:9091/v1/users >/dev/null 2>&1; then API_OK=1; break; fi
+    sleep 1
+  done
+  if (( ! API_OK )); then
+    warn "API Telemt 127.0.0.1:9091 не ответил — панель пропускаю."
+  else
+    PANEL_INSTALLER="/tmp/telemt-panel-install.$$.sh"
+    if curl -fsSL "https://raw.githubusercontent.com/amirotin/telemt_panel/${PANEL_VERSION}/install.sh" -o "$PANEL_INSTALLER"; then
+      chmod 0700 "$PANEL_INSTALLER"
+      set +e
+      TP_LANG=ru \
+      TP_TELEMT_URL="http://127.0.0.1:9091" \
+      TP_TELEMT_AUTH_HEADER="" \
+      TP_TELEMT_BINARY="/usr/local/bin/telemt" \
+      TP_TELEMT_SERVICE="telemt1" \
+      TP_ADMIN_USER="$PANEL_USER" \
+      TP_ADMIN_PASSWORD="$PANEL_PASS" \
+      TP_VARIANT=full \
+      TP_STORE_DRIVER=sqlite \
+      TP_RUN_AS=user \
+      TP_TLS_MODE=http \
+      TP_LISTEN="127.0.0.1:8080" \
+      TP_OPEN_FIREWALL=no \
+      sh "$PANEL_INSTALLER" --version "$PANEL_VERSION" --yes --lang ru
+      PANEL_RC=$?
+      set -e
+      rm -f "$PANEL_INSTALLER"
+
+      if (( PANEL_RC == 0 )) || systemctl is-active --quiet telemt-panel 2>/dev/null; then
+        if [[ -f /etc/telemt-panel/config.toml ]]; then
+          python3 - "$DOMAIN" "$PANEL_PORT" <<'PY'
+import sys, re
+from pathlib import Path
+domain, port = sys.argv[1], sys.argv[2]
+p = Path("/etc/telemt-panel/config.toml")
+t = p.read_text()
+t = re.sub(r'^listen\s*=\s*.*$', 'listen = "127.0.0.1:8080"', t, count=1, flags=re.M)
+if "trusted_proxies" not in t:
+    inject = f'\npublic_url = "https://{domain}:{port}"\ntrusted_proxies = ["127.0.0.1/32"]\n'
+    t = re.sub(r'(data_dir\s*=\s*[^\n]+\n)', r'\1' + inject, t, count=1)
+t2, n = re.subn(r'\[tls\]\n(?:.*\n)*?(?=\[|\Z)', '[tls]\nmode = "http"\n\n', t, count=1)
+p.write_text(t2 if n else t)
+print("panel config patched")
+PY
+          systemctl reset-failed telemt-panel 2>/dev/null || true
+          systemctl restart telemt-panel
+        fi
+
+        if ! grep -q "telemt-panel-front" /etc/caddy/Caddyfile 2>/dev/null; then
+          cat >> /etc/caddy/Caddyfile <<EOF
+
+# telemt-panel-front
+https://$DOMAIN:$PANEL_PORT {
+	reverse_proxy 127.0.0.1:8080
+}
+EOF
+          if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+            systemctl reload caddy
+          else
+            warn "Caddyfile с панелью не валиден"
+          fi
+        fi
+
+        if systemctl is-active --quiet telemt-panel; then
+          ok "Telemt Panel active (backend :8080)"
+          PANEL_URL="https://${DOMAIN}:${PANEL_PORT}"
+        else
+          warn "Панель не active — journalctl -u telemt-panel"
+        fi
+      else
+        warn "Установщик панели код $PANEL_RC."
+      fi
+    else
+      warn "Не скачать install.sh панели ($PANEL_VERSION)."
+    fi
+  fi
+fi
+
+
 sleep 2
 say "\n${B}Проверка сервисов:${N}"
-systemctl --no-pager --full status caddy telemt1 | tail -n 30 || true
+if [[ "$DO_PANEL" =~ ^[YyДд]$ ]]; then
+  systemctl --no-pager --full status caddy telemt1 telemt-panel 2>/dev/null | tail -n 40 || true
+else
+  systemctl --no-pager --full status caddy telemt1 | tail -n 30 || true
+fi
+
 say "\n${B}Диагностика:${N}"
-ss -ltnp | grep -E ':(80|443|8444|9091)\b' || true
-curl -sk --max-time 8 "https://$DOMAIN:8444/" --resolve "$DOMAIN:8444:127.0.0.1" -o /dev/null -w 'Локальный сайт Caddy: HTTP %{http_code}\n' || true
-say "Сертификат управляется Caddy автоматически; проверь логи Caddy при ошибках TLS."
+ss -ltnp | grep -E ":(80|443|8080|8443|8444|9091|${PANEL_PORT})\b" || true
+curl -sk --max-time 8 "https://$DOMAIN:8444/" --resolve "$DOMAIN:8444:127.0.0.1" -o /dev/null -w 'Caddy decoy :8444 → HTTP %{http_code}\n' || true
+curl -sk --max-time 5 --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/" -o /dev/null -w 'Telemt mask :443 → HTTP %{http_code}\n' || true
+if [[ -n "${PANEL_URL:-}" ]]; then
+  curl -sk --max-time 5 "https://127.0.0.1:${PANEL_PORT}/api/health" -o /dev/null -w "Panel Caddy :${PANEL_PORT} → HTTP %{http_code}\n" || true
+  curl -sS --max-time 3 http://127.0.0.1:8080/api/health >/dev/null && ok "Panel backend :8080 OK" || warn "Panel backend :8080 down"
+fi
 
 LINK="$(curl -fsS --max-time 5 http://127.0.0.1:9091/v1/users 2>/dev/null | jq -r --arg u "$USERNAME" '.data[]? | select(.username == $u) | .links.tls[0] // empty' | head -n1 || true)"
 say "\n${G}${B}Установка завершена.${N}"
@@ -261,8 +493,14 @@ say "Домен: $DOMAIN"
 say "Сайт-заглушка: /var/www/html/index.html"
 say "Конфиг Telemt: /etc/telemt/telemt1.toml"
 say "Секрет пользователя $USERNAME: $SECRET"
+[[ -n "${ADMIN_NAME:-}" ]] && say "Sudo-пользователь: $ADMIN_NAME"
 if [[ -n "$LINK" ]]; then say "Ссылка Telemt: $LINK"; else
-  say "Ссылка пока не получена из API. Проверь: journalctl -u telemt1 -n 80 --no-pager"
+  say "Ссылка пока не из API. journalctl -u telemt1 -n 80"
+fi
+if [[ -n "${PANEL_URL:-}" ]]; then
+  say "Панель: $PANEL_URL  (логин: $PANEL_USER, пароль — тот, что ввёл в скрипте)"
+elif [[ "$DO_PANEL" =~ ^[YyДд]$ ]]; then
+  say "Панель: запрошена, но не поднялась."
 fi
 say "\nКоманды:"
 say "  systemctl status telemt1 caddy"
@@ -271,4 +509,5 @@ say "  journalctl -u caddy -f"
 say "  ufw status verbose"
 say "  curl -s http://127.0.0.1:9091/v1/users | jq"
 say "  cat /etc/telemt/secret"
-say "\n${Y}Важно:${N} проверь ссылку подключения и логи перед использованием. Не запускай поверх уже настроенного Telemt без резервной копии."
+[[ "$DO_PANEL" =~ ^[YyДд]$ ]] && say "  systemctl status telemt-panel && journalctl -u telemt-panel -f"
+say "\n${Y}Важно:${N} проверь SSH под sudo-пользователем до отключения root. Не гоняй скрипт поверх боевого Telemt без бэкапа."
